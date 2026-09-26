@@ -1,0 +1,24 @@
+[theme]
+base = "light"
+primaryColor = "#0D99FF"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F5"
+textColor = "#1E1E1E"
+font = "sans serif"
+baseFontSize = 14
+
+[theme.sidebar]
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F5"
+
+# ヘッダーを CSS で消さずに済むよう、ツールバーは設定側で最小化する
+# (Deploy ボタンや Running 表示が消え、サイドバーの開閉ボタンは残る)
+[client]
+toolbarMode = "minimal"
+
+[server]
+headless = true
+port = 8501
+
+[browser]
+gatherUsageStats = false
