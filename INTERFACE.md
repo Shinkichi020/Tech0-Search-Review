@@ -1,6 +1,6 @@
 # 3人で共有するインターフェース取り決め
 
-Tech0 のフロントエンドは **左レールの機能切り替え(本人担当)** と
+Tech0 のフロントエンドは **左レールの機能切り替え(レージさん担当)** と
 **各機能の画面(同僚2名担当)** を分離して開発します。
 この分離を壊さないための最小ルールだけをまとめます。
 
@@ -10,13 +10,13 @@ Tech0 のフロントエンドは **左レールの機能切り替え(本人担�
 
 | ファイル | 担当 | 役割 |
 |---|---|---|
-| `app.py` | 本人 | エントリポイント。レール描画 → 機能の呼び出し |
-| `shell/feature_switcher.py` | **本人(変更不可)** | 機能の定義・切り替えボタン・URL同期・レールCSS |
-| `shell/registry.py` | 本人 | 機能キー → 同僚モジュールの解決。プレースホルダ表示 |
+| `app.py` | レージさん | エントリポイント。レール描画 → 機能の呼び出し |
+| `shell/feature_switcher.py` | **レージさん(変更不可)** | 機能の定義・切り替えボタン・URL同期・レールCSS |
+| `shell/registry.py` | レージさん | 機能キー → 同僚モジュールの解決。プレースホルダ表示 |
 | `features/tech0_search.py` | 同僚A | `render()` を実装 |
-| `features/tech0_review.py` | 同僚B | `render()` を実装 |
+| `features/tech0_review.py` | おのちゃん | `render()` を実装 |
 
-`shell/` 配下は本人が保守します。同僚は触らず、必要な変更は本人に依頼してください
+`shell/` 配下はレージさんが保守します。同僚は触らず、必要な変更はレージさんに依頼してください
 (機能の追加・ラベルの変更は `FEATURES` の1行で済みます)。
 
 ---
@@ -37,8 +37,8 @@ def render() -> None:
 ### ウィジェットの key は機能ごとに接頭辞を付ける
 
 ```python
-st.text_input("キーワード", key="search_query")   # 同僚A
-st.selectbox("項目", ITEMS, key="review_item")    # 同僚B
+st.text_input("キーワード", key="search_query")   # たくちゃん
+st.selectbox("項目", ITEMS, key="review_item")    # おのちゃん
 ```
 
 `session_state` とウィジェットIDはアプリ全体で1つの名前空間を共有します。
@@ -54,15 +54,15 @@ st.selectbox("項目", ITEMS, key="review_item")    # 同僚B
 
 | 名前 | 所有者 | 意味 |
 |---|---|---|
-| `feature` / `?feature=` | **本人** | 選択中の機能キー(`search` / `review`)。同僚は読み取りのみ |
-| `search_*` | 同僚A | 自由に利用 |
-| `review_*` | 同僚B | 自由に利用 |
+| `feature` / `?feature=` | **レージさん** | 選択中の機能キー(`search` / `review`)。同僚は読み取りのみ |
+| `search_*` | たくちゃん | 自由に利用 |
+| `review_*` | おのちゃん | 自由に利用 |
 
 ---
 
 ## 3. スタイル(CSS)の扱い
 
-- 本人が `inject_rail_style()` で **左レール + 共通の下地**(背景色・フォント・`.stApp` など)を注入済み。
+- レージさんが `inject_rail_style()` で **左レール + 共通の下地**(背景色・フォント・`.stApp` など)を注入済み。
   `--canvas` `--panel` `--line` `--ink` `--muted` `--blue` の CSS 変数が使えます。
 - 同僚は自分の画面用の CSS だけを、**自分の `render()` の中**に閉じて書く:
 
@@ -77,7 +77,7 @@ def render() -> None:
 ```
 
 - Streamlit の内部クラス(`[data-testid="..."]`)を狙う場合は、`requirements.txt` で
-  バージョンを固定したままにして、変更時は本人に一声かけてください。
+  バージョンを固定したままにして、変更時はレージさんに一声かけてください。
 
 ---
 
@@ -96,7 +96,7 @@ streamlit run app.py
 
 ---
 
-## 5. 機能を増やすとき(本人向けメモ)
+## 5. 機能を増やすとき(レージさん向けメモ)
 
 1. `shell/feature_switcher.py` の `FEATURES` に1行追加(`key` / `label` / `desc` / `icon`)
 2. `shell/registry.py` の `MODULES` に `key → features.<モジュール>` を追加
@@ -112,4 +112,4 @@ streamlit run app.py
 - [ ] `?feature=review` を直接開いても Review が選択された状態で起動する
 - [ ] `?feature=xxx`(不正値)でも既定機能で起動する(落ちない)
 - [ ] たくちゃん・おのちゃんがファイルを削除してもアプリが起動する(プレースホルダ表示)
-- [ ] レールのラベル・説明を変えたい場合は本人に依頼(同僚は `FEATURES` を触らない)
+- [ ] レールのラベル・説明を変えたい場合はレージさんに依頼(同僚は `FEATURES` を触らない)
