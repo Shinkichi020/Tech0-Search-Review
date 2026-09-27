@@ -1,7 +1,7 @@
 """Tech0 シェル(最小構成) — 左レールの機能切り替えだけを担当する。
 
     app.py
-      ├─ shell/feature_switcher.py   ★ 本人担当(左レールの機能切り替えのみ)
+      ├─ shell/feature_switcher.py   ★ レージさん担当(左レールの機能切り替えのみ)
       ├─ shell/registry.py            機能キー → 同僚のモジュールを解決
       └─ features/tech0_*.py          たくちゃん・おのちゃんの担当領域(render() を実装する)
 
@@ -23,7 +23,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# 左レールのスタイル(本人担当分)。同僚のコンテンツ用CSSは同居させない。
+# 左レールのスタイル(レージさん担当分)。同僚のコンテンツ用CSSは同居させない。
 inject_rail_style()
 
 # 左レールを描画し、選択中の機能キーを受け取る

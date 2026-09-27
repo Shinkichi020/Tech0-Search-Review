@@ -11,9 +11,9 @@ FEATURE_KEY = "review"
 
 def render() -> None:
     """左レールでこの機能が選ばれているときに呼ばれる。"""
-    # ---- ここから同僚Bの実装 ----
+    # ---- ここからおのちゃんの実装 ----
     st.markdown("### Tech0 Review")
-    st.caption("この画面は同僚Bの担当領域です。`features/tech0_review.py` の `render()` を実装してください。")
+    st.caption("この画面はおのちゃんの担当領域です。`features/tech0_review.py` の `render()` を実装してください。")
 
     with st.container(border=True):
         st.markdown("**実装メモ**")
@@ -27,4 +27,4 @@ def render() -> None:
     with st.container(border=True):
         st.file_uploader("対象ファイル", type=["pptx", "pdf", "docx", "md"], key="review_file_example")
         st.caption("アップロード UI と結果表示はここに実装します。")
-    # ---- ここまで同僚Bの実装 ----
+    # ---- ここまでおのちゃんの実装 ----

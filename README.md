@@ -9,8 +9,8 @@ Tech0 フロントエンドのうち、**左レールの機能切り替え部分
 app.py                        エントリポイント(レール描画 → 機能呼び出し)
 shell/feature_switcher.py     ★左レールの機能切り替え(担当分)
 shell/registry.py             機能キー → features/* の解決 + プレースホルダ
-features/tech0_search.py      同僚Aの実装スケルトン(render() を実装)
-features/tech0_review.py      同僚Bの実装スケルトン(render() を実装)
+features/tech0_search.py      たくちゃんの実装スケルトン(render() を実装)
+features/tech0_review.py      おのちゃんの実装スケルトン(render() を実装)
 INTERFACE.md                  3人で共有する連携仕様
 test_switcher.py              レールの自動検証(AppTest)
 requirements.txt              依存パッケージ
