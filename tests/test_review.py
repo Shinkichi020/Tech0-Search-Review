@@ -424,3 +424,16 @@ def test_run_review_retries_ok_with_unverified_evidence():
 
 def test_normalize_text_fixes_pdf_characters():
     assert loader.normalize_text("情報システム部⻑ 受注‧販売 件∕年") == "情報システム部長 受注・販売 件/年"
+
+
+def test_long_evidence_tolerates_small_gaps():
+    """長い引用は、断片の 8 割以上が本文にあれば確認できたとみなす(PDF のページ番号の行が抜けた場合など)。"""
+    body = "\n".join(f"第{i}行目の記述はこのとおりである。" for i in range(1, 11)) + "\n第3章 機能要件 11"
+    lines = [f"第{i}行目の記述はこのとおりである。" for i in range(1, 11)]
+    lines[4] = "AI が言い換えた第5行目の記述。"  # 10 断片中 1 つだけ本文にない
+    judged, _ = validate_result(make_items(1), [{"item_no": 1, "status": "OK", "evidence": "\n".join(lines), "suggestion": ""}], body)
+    assert judged[1]["evidence_found"] is True
+
+    lines[1] = lines[2] = lines[3] = "本文にない文です。"  # 本文にない断片が 4/10 になると確認できない扱い
+    judged, _ = validate_result(make_items(1), [{"item_no": 1, "status": "OK", "evidence": "\n".join(lines), "suggestion": ""}], body)
+    assert judged[1]["evidence_found"] is False

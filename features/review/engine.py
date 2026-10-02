@@ -1,4 +1,4 @@
-"""レビュー項目ごとに、提出文書を gpt-4o-mini で判定する。
+"""レビュー項目ごとに、提出文書を AI(config.MODEL)で判定する。
 
 流れ:
   run_review()
@@ -22,6 +22,8 @@ from features.review.config import BATCH_SIZE, MAX_DOC_CHARS, MODEL, REPO_ROOT
 from features.review.loader import normalize_text
 
 MAX_PARALLEL = 4  # 同時に投げる API 呼び出しの数(利用上限に当たりにくい控えめな値)
+MIN_PIECE_CHARS = 6         # 根拠の照合で数える断片の最小文字数
+EVIDENCE_MATCH_RATIO = 0.8  # 根拠の断片のうち、本文で見つかればよい割合
 NO_EVIDENCE = "（該当する記述なし）"  # 照合は _squash() で正規化してから行うので、括弧の全角/半角は問わない
 NOT_JUDGED_SUGGESTION = "AI から判定結果が返らなかったため、もう一度レビューを実行してください。"
 
@@ -164,7 +166,7 @@ def build_messages(phase: str, items: list[dict], body: str) -> list[dict]:
     """AI に送るメッセージを組み立てる。
 
     チェック項目を本文より前に置く。本文を先に置くと、長い本文を読んだあとに項目を渡す形になり、
-    gpt-4o-mini が根拠を空のまま「OK」と返す手抜きの回答が目立った(デモ文書で確認)。
+    AI が根拠を空のまま「OK」と返す手抜きの回答が目立った(gpt-4o-mini・デモ文書で確認)。
     """
     item_list = [
         {"item_no": it["item_no"], "check_item": it["check_item"], "viewpoint": it.get("viewpoint") or ""}
@@ -175,7 +177,8 @@ def build_messages(phase: str, items: list[dict], body: str) -> list[dict]:
         f"{json.dumps(item_list, ensure_ascii=False, indent=1)}\n\n"
         f"# 本文\n<document>\n{body}\n</document>\n\n"
         "上のチェック項目それぞれについて、本文を判定してください。"
-        "evidence は空にせず、本文から根拠をそのまま抜き出してください。\n"
+        "evidence は空にせず、本文から根拠をそのまま抜き出してください。"
+        "表は該当する 1〜2 行だけを抜き出し、evidence 全体を 150 字以内にしてください。\n"
         # 最後に念押しすると判定が甘くなりにくい(念押しなしでは、あいまいな記述でも OK になりやすかった)
         "判定の前に、各項目の観点に挙がっている確認事項を一つずつ本文で探し、数値・手順・担当などの"
         "具体的な記述が欠けているものがないかを厳しく確認してください。"
@@ -272,14 +275,17 @@ def _evidence_found(status: str, evidence: str, body: str) -> bool:
     if _squash(evidence) == _squash(NO_EVIDENCE):
         return status == "NG"
     target = _squash(body)
-    # AI が「…」で途中を省略することがあるので、区切った断片がすべて本文にあれば確認できたとみなす
-    pieces = [p for p in re.split(r"…+|\.{3,}", _squash(evidence, keep_ellipsis=True)) if p]
-    return bool(pieces) and all(p in target for p in pieces)
+    # 根拠を行・文・「…」(省略)で区切り、断片ごとに本文を探す。
+    # 長い引用では、PDF のページ番号の行が抜けるなどのわずかなずれが起きるので、
+    # 断片の 8 割以上が本文で見つかれば確認できたとみなす。短すぎる断片(6 文字未満)は数えない。
+    pieces = [_squash(p) for p in re.split(r"\n|。|…+|\.{3,}", normalize_text(evidence))]
+    pieces = [p for p in pieces if len(p) >= MIN_PIECE_CHARS] or [p for p in pieces if p]
+    if not pieces:
+        return False
+    found = sum(p in target for p in pieces)
+    return found / len(pieces) >= EVIDENCE_MATCH_RATIO
 
 
-def _squash(text: str, keep_ellipsis: bool = False) -> str:
+def _squash(text: str) -> str:
     """照合用に、正規化して空白・改行・かぎかっこ・引用符を取り除く。"""
-    text = normalize_text(text)
-    if keep_ellipsis:
-        text = text.replace("...", "…")
-    return re.sub(r"[\s「」『』\"'“”‘’]", "", text)
+    return re.sub(r"[\s「」『』\"'“”‘’]", "", normalize_text(text))

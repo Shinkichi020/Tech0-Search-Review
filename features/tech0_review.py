@@ -1,8 +1,8 @@
 """Tech0 Review — 担当: おのちゃん
 
-画面は 2 タブ:
-  レビュワー: ログイン → 工程を選ぶ → レビュー項目 Excel を登録
-  レビューイ: 工程を選ぶ → 文書を提出 → AI が評価
+画面は 2 タブ(利用者が最初に見るのは 1 つ目):
+  ドキュメントレビュー実施     : 工程を選ぶ → 文書を提出 → AI が評価(ログイン不要。コード上は reviewee)
+  レビュー項目の登録(管理用)   : ログイン → 工程を選ぶ → レビュー項目 Excel を登録(コード上は reviewer)
 
 このファイルは画面だけを担当し、処理は features/review/ にまとめる。
 import した時点では DB にも OpenAI にも接続しない(test_switcher.py が import するため)。
@@ -96,11 +96,11 @@ def render() -> None:
     st.markdown("## ◫ Tech0 Review")
     st.caption("SI 工程ごとのレビュー項目に照らして、提出された文書を AI が項目ごとに判定します。")
 
-    tab_reviewer, tab_reviewee = st.tabs(["レビュワー", "レビューイ"])
-    with tab_reviewer, st.container(border=True, key="review_panel_reviewer"):
-        _render_reviewer_tab()
+    tab_reviewee, tab_reviewer = st.tabs(["ドキュメントレビュー実施", "レビュー項目の登録(管理用)"])
     with tab_reviewee, st.container(border=True, key="review_panel_reviewee"):
         _render_reviewee_tab()
+    with tab_reviewer, st.container(border=True, key="review_panel_reviewer"):
+        _render_reviewer_tab()
 
 
 # ---------------------------------------------------------------- 共通部品
