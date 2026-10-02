@@ -8,6 +8,7 @@
 import した時点では DB にも OpenAI にも接続しない(test_switcher.py が import するため)。
 """
 
+import html
 import io
 import sqlite3
 
@@ -16,8 +17,9 @@ import streamlit as st
 from features.review import db
 from features.review.auth import verify_login
 from features.review.checklist_loader import ChecklistError, import_checklist, parse_excel
-from features.review.config import PHASES
-from features.review.loader import LoaderError, load_uploaded
+from features.review.config import MAX_DOC_CHARS, PHASES
+from features.review.exporter import build_result_xlsx, result_file_name
+from features.review.loader import LoaderError, fetch_google_doc, load_uploaded
 
 FEATURE_KEY = "review"
 
@@ -41,6 +43,34 @@ _CSS = """
   /* 入力欄の背景が下地(--canvas)と同色で見えにくいので、各タブの中身を白いパネルに載せる。
      「st-key-キー名」は st.container(key=...) に Streamlit が付けるクラス。 */
   [class*="st-key-review_panel_"] { background: var(--panel); }
+
+  /* レビュー結果 */
+  .review-badge {
+    display: inline-block; min-width: 34px; text-align: center;
+    font-size: 11.5px; font-weight: 700; border-radius: 999px; padding: 1px 9px;
+  }
+  .review-badge.is-ok { background: #E2F4EA; color: #23804F; }
+  .review-badge.is-ng { background: #FBE6E3; color: #B93A2E; }
+  .review-summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 2px 0 8px; font-size: 14px; }
+  .review-summary b { font-size: 18px; margin-right: 10px; }
+  .review-summary-meta { color: var(--muted); font-size: 12.5px; }
+  .review-card {
+    background: var(--panel); border: 1px solid var(--line); border-left-width: 4px;
+    border-radius: 8px; padding: 10px 14px; margin: 0 0 10px; font-size: 13.5px; color: var(--ink);
+  }
+  .review-card.is-ok { border-left-color: #23804F; }
+  .review-card.is-ng { border-left-color: #B93A2E; }
+  .review-card-head { display: flex; align-items: baseline; gap: 8px; }
+  .review-card-no { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .review-card-title { font-weight: 700; }
+  .review-card-vp { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .review-card-label { color: var(--muted); font-size: 11.5px; font-weight: 700; margin-top: 8px; }
+  .review-card-quote { background: #FAFAFA; border-left: 3px solid var(--line); padding: 4px 10px; margin-top: 2px; }
+  .review-card-text { margin-top: 2px; }
+  .review-card-note {
+    display: inline-block; margin-top: 6px; font-size: 12px; color: #8A6200;
+    background: #FFF6DC; border-radius: 4px; padding: 1px 8px;
+  }
 </style>
 """
 
@@ -204,6 +234,9 @@ def _show_items_table(items: list[dict]) -> None:
 
 # ---------------------------------------------------------------- レビューイ
 
+_SOURCE_FILE = "ファイルをアップロード"
+_SOURCE_URL = "Google ドキュメントの URL"
+
 def _render_reviewee_tab() -> None:
     counts = _load_counts()
     if counts is None:
@@ -216,13 +249,23 @@ def _render_reviewee_tab() -> None:
     else:
         st.warning("この工程にはまだレビュー項目が登録されていません。レビュワーに登録を依頼してください。")
 
-    uploaded = st.file_uploader(
-        "レビューを受ける文書",
-        type=_DOC_TYPES,
-        key="review_doc_file",
-        help="Word・Excel・PowerPoint・PDF・テキスト・CSV に対応しています。",
+    source = st.radio(
+        "提出方法",
+        [_SOURCE_FILE, _SOURCE_URL],
+        horizontal=True,
+        key="review_source",
+        on_change=_reset_document,  # 提出方法を切り替えたら、読み込んだ文書と結果を消す
     )
-    _sync_document(uploaded)
+    if source == _SOURCE_FILE:
+        uploaded = st.file_uploader(
+            "レビューを受ける文書",
+            type=_DOC_TYPES,
+            key="review_doc_file",
+            help="Word・Excel・PowerPoint・PDF・テキスト・CSV に対応しています。",
+        )
+        _sync_document(uploaded)
+    else:
+        _render_url_input()
 
     if st.session_state.review_load_error:
         st.error(st.session_state.review_load_error)
@@ -231,11 +274,31 @@ def _render_reviewee_tab() -> None:
     if not text:
         return
 
-    st.markdown(f"**抽出したテキスト**：{len(text):,} 字")
-    with st.container(height=320, border=True):
+    st.markdown(f"**抽出したテキスト**：{len(text):,} 字（{st.session_state.review_file_name}）")
+    with st.container(height=280, border=True):
         st.text(text)
+    if len(text) > MAX_DOC_CHARS:
+        st.warning(f"文書が長いため（{len(text):,} 字）、先頭 {MAX_DOC_CHARS:,} 字までを評価します。")
 
-    st.info("AI による評価は準備中です。")
+    if st.button(
+        f"AI でレビューする（{n} 項目）" if n else "AI でレビューする",
+        key="review_run",
+        type="primary",
+        disabled=n == 0,  # レビュー項目が 0 件の工程では実行できない
+    ):
+        st.info("AI による評価は次のステップで実装します。")
+
+    result = st.session_state.review_result
+    if result and result["phase"] == phase:  # 工程を切り替えたら、別工程の結果は出さない
+        _render_result(result)
+
+
+def _reset_document() -> None:
+    st.session_state.review_file_sig = None
+    st.session_state.review_text = ""
+    st.session_state.review_file_name = None
+    st.session_state.review_load_error = None
+    st.session_state.review_result = None
 
 
 def _sync_document(uploaded) -> None:
@@ -248,11 +311,8 @@ def _sync_document(uploaded) -> None:
     sig = (uploaded.name, uploaded.size) if uploaded is not None else None
     if sig == st.session_state.review_file_sig:
         return
+    _reset_document()
     st.session_state.review_file_sig = sig
-    st.session_state.review_text = ""
-    st.session_state.review_file_name = None
-    st.session_state.review_load_error = None
-    st.session_state.review_result = None
     if uploaded is None:
         return
     try:
@@ -261,3 +321,103 @@ def _sync_document(uploaded) -> None:
         st.session_state.review_file_name = uploaded.name
     except LoaderError as e:
         st.session_state.review_load_error = str(e)
+
+
+def _render_url_input() -> None:
+    col_url, col_btn = st.columns([5, 1], vertical_alignment="bottom")
+    with col_url:
+        url = st.text_input(
+            "Google ドキュメント／スプレッドシート／スライドの URL",
+            key="review_doc_url",
+            placeholder="https://docs.google.com/document/d/…",
+        )
+    with col_btn:
+        clicked = st.button("取り込む", key="review_fetch", use_container_width=True, disabled=not url.strip())
+    if not clicked:
+        return
+    _reset_document()
+    try:
+        with st.spinner("Google ドライブから文書を取り込んでいます…"):
+            name, text = fetch_google_doc(url)
+    except LoaderError as e:
+        st.session_state.review_load_error = str(e)
+        return
+    st.session_state.review_file_sig = ("url", url.strip())
+    st.session_state.review_text = text
+    st.session_state.review_file_name = name
+
+
+# ---------------------------------------------------------------- 結果の表示
+
+def _render_result(result: dict) -> None:
+    summary = result["summary"]
+    st.markdown("#### レビュー結果")
+    st.markdown(
+        '<div class="review-summary">'
+        f'<span class="review-badge is-ok">OK</span><b>{summary["ok"]}</b>件'
+        f'<span class="review-badge is-ng">NG</span><b>{summary["ng"]}</b>件'
+        f'<span class="review-summary-meta">{_esc(result["phase"])}／{_esc(result.get("file_name") or "")}</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    if result.get("truncated"):
+        st.warning(f"文書が長いため（{result['original_chars']:,} 字）、先頭 {MAX_DOC_CHARS:,} 字までを評価しました。")
+    st.caption("AI による一次レビューの結果です。最終判断は品質保証部の品質チェック会議で行ってください。")
+
+    col_filter, col_dl = st.columns([3, 2], vertical_alignment="center")
+    with col_filter:
+        shown = st.segmented_control(
+            "表示する項目",
+            ["すべて", "NG のみ", "OK のみ"],
+            default="すべて",
+            key="review_result_filter",
+            label_visibility="collapsed",
+        )
+    with col_dl:
+        st.download_button(
+            "結果を Excel でダウンロード",
+            data=build_result_xlsx(result),
+            file_name=result_file_name(result),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="review_download",
+            use_container_width=True,
+        )
+
+    wanted = {"NG のみ": {"NG"}, "OK のみ": {"OK"}}.get(shown or "すべて", {"OK", "NG"})
+    cards = [_card_html(r) for r in result["results"] if r["status"] in wanted]
+    if cards:
+        st.markdown("".join(cards), unsafe_allow_html=True)
+    else:
+        st.caption("該当する項目はありません。")
+
+
+def _card_html(r: dict) -> str:
+    """結果 1 件分のカード。本文や AI の回答はそのまま HTML に入れず、必ずエスケープする。"""
+    status_class = "is-ok" if r["status"] == "OK" else "is-ng"
+    parts = [
+        f'<div class="review-card {status_class}">',
+        '<div class="review-card-head">'
+        f'<span class="review-badge {status_class}">{r["status"]}</span>'
+        f'<span class="review-card-no">No.{r["item_no"]}</span>'
+        f'<span class="review-card-title">{_esc(r["check_item"])}</span></div>',
+    ]
+    if r.get("viewpoint"):
+        parts.append(f'<div class="review-card-vp">観点：{_esc(r["viewpoint"])}</div>')
+    parts.append(
+        '<div class="review-card-label">根拠（本文からの抜粋）</div>'
+        f'<div class="review-card-quote">{_esc(r["evidence"])}</div>'
+    )
+    if not r.get("evidence_found", True):
+        parts.append('<div class="review-card-note">根拠を本文で確認できませんでした</div>')
+    if r["status"] == "NG" and r.get("suggestion"):
+        parts.append(
+            '<div class="review-card-label">改善提案</div>'
+            f'<div class="review-card-text">{_esc(r["suggestion"])}</div>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _esc(text) -> str:
+    """HTML として解釈されないようにエスケープし、改行は <br> にする。"""
+    return html.escape(str(text)).replace("\n", "<br>")

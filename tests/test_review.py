@@ -229,3 +229,63 @@ def test_fetch_google_doc_without_credentials(monkeypatch):
     monkeypatch.setattr(gd, "get_drive_service", no_credentials)
     with pytest.raises(LoaderError, match="credentials.json"):
         loader.fetch_google_doc("https://docs.google.com/document/d/abc/edit")
+
+
+# ---------------------------------------------------------------- Excel 出力(exporter)
+
+from features.review.exporter import EVIDENCE_NOT_FOUND, build_result_xlsx, result_file_name  # noqa: E402
+
+SAMPLE_RESULT = {
+    "phase": "基本設計",
+    "file_name": "基本設計書_経費精算.docx",
+    "reviewed_at": "2026-10-01T14:05:12",
+    "summary": {"ok": 1, "ng": 2},
+    "truncated": False,
+    "original_chars": 1234,
+    "results": [
+        {"item_no": 1, "check_item": "画面遷移図が記載されている", "viewpoint": "主要画面の遷移が図示されているか",
+         "status": "OK", "evidence": "3.2 画面遷移図を以下に示す。", "suggestion": "", "evidence_found": True},
+        {"item_no": 2, "check_item": "エラー時の処理が定義されている", "viewpoint": "",
+         "status": "NG", "evidence": "(該当する記述なし)", "suggestion": "エラー時の方針を追記してください。",
+         "evidence_found": True},
+        {"item_no": 3, "check_item": "=SUM(A1:A2)", "viewpoint": "数式に見える文字列",
+         "status": "NG", "evidence": "本文にない文", "suggestion": "=HYPERLINK(\"x\")", "evidence_found": False},
+    ],
+}
+
+
+def _load_result_workbook(result):
+    return openpyxl.load_workbook(io.BytesIO(build_result_xlsx(result)))
+
+
+def test_build_result_xlsx_layout():
+    wb = _load_result_workbook(SAMPLE_RESULT)
+    assert wb.sheetnames == ["レビュー結果", "NG一覧"]
+    ws = wb["レビュー結果"]
+    assert [ws.cell(row=r, column=1).value for r in range(1, 6)] == ["工程", "対象ファイル", "実施日時", "判定件数", "注意"]
+    assert ws["B1"].value == "基本設計"
+    assert ws["B3"].value == "2026/10/01 14:05"
+    assert ws["B4"].value == "OK 1 件 ／ NG 2 件"
+    assert [c.value for c in ws[7]] == ["No", "チェック項目", "観点", "判定", "根拠（本文からの抜粋）", "改善提案", "備考"]
+    assert [ws.cell(row=r, column=4).value for r in (8, 9, 10)] == ["OK", "NG", "NG"]
+    assert ws["G10"].value == EVIDENCE_NOT_FOUND and ws["G8"].value is None
+    assert ws.freeze_panes == "A8"
+    assert ws.auto_filter.ref == "A7:G10"
+    assert [ws_row[0].value for ws_row in wb["NG一覧"].iter_rows(min_row=2)] == [2, 3]
+
+
+def test_build_result_xlsx_keeps_formula_like_text_as_text():
+    ws = _load_result_workbook(SAMPLE_RESULT)["レビュー結果"]
+    assert ws["B10"].value == "=SUM(A1:A2)" and ws["B10"].data_type == "s"
+    assert ws["F10"].data_type == "s"
+
+
+def test_build_result_xlsx_notes_truncation():
+    truncated = {**SAMPLE_RESULT, "truncated": True, "original_chars": 123456}
+    note = _load_result_workbook(truncated)["レビュー結果"]["B5"].value
+    assert "123,456 字" in note and "先頭 100,000 字" in note
+
+
+def test_result_file_name():
+    assert result_file_name(SAMPLE_RESULT) == "レビュー結果_基本設計_20261001_1405.xlsx"
+    assert result_file_name({**SAMPLE_RESULT, "phase": "a/b:c"}) == "レビュー結果_a_b_c_20261001_1405.xlsx"
