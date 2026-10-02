@@ -18,6 +18,7 @@ from features.review import db
 from features.review.auth import verify_login
 from features.review.checklist_loader import ChecklistError, import_checklist, parse_excel
 from features.review.config import MAX_DOC_CHARS, PHASES
+from features.review.engine import ReviewError, run_review
 from features.review.exporter import build_result_xlsx, result_file_name
 from features.review.loader import LoaderError, fetch_google_doc, load_uploaded
 
@@ -286,11 +287,36 @@ def _render_reviewee_tab() -> None:
         type="primary",
         disabled=n == 0,  # レビュー項目が 0 件の工程では実行できない
     ):
-        st.info("AI による評価は次のステップで実装します。")
+        _run_review(phase, text)
 
     result = st.session_state.review_result
     if result and result["phase"] == phase:  # 工程を切り替えたら、別工程の結果は出さない
         _render_result(result)
+
+
+def _run_review(phase: str, text: str) -> None:
+    """DB からその工程の項目を読み、AI で判定して結果を review_result に入れる。"""
+    try:
+        items = db.get_review_items(phase)
+    except sqlite3.Error as e:
+        st.error(f"レビュー項目の DB を開けませんでした（{e}）。")
+        return
+
+    bar = st.progress(0.0, text=f"AI が判定しています…（0 / {len(items)} 項目）")
+
+    def show_progress(done: int, total: int) -> None:
+        bar.progress(done / total, text=f"AI が判定しています…（{done} / {total} 項目）")
+
+    try:
+        result = run_review(
+            phase, items, text, st.session_state.review_file_name or "", on_progress=show_progress
+        )
+    except ReviewError as e:
+        st.error(str(e))
+        return
+    finally:
+        bar.empty()
+    st.session_state.review_result = result
 
 
 def _reset_document() -> None:

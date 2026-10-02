@@ -289,3 +289,138 @@ def test_build_result_xlsx_notes_truncation():
 def test_result_file_name():
     assert result_file_name(SAMPLE_RESULT) == "レビュー結果_基本設計_20261001_1405.xlsx"
     assert result_file_name({**SAMPLE_RESULT, "phase": "a/b:c"}) == "レビュー結果_a_b_c_20261001_1405.xlsx"
+
+
+# ---------------------------------------------------------------- 評価(engine)。OpenAI はモック
+
+import json  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from features.review import engine  # noqa: E402
+from features.review.engine import NO_EVIDENCE, ReviewError, run_review, validate_result  # noqa: E402
+
+BODY = "3.2 画面遷移図を以下に示す。\nログイン画面から一覧画面へ遷移する。"
+
+
+class FakeClient:
+    """chat.completions.create() の代わり。answer(呼ばれた項目のリスト) が返す結果を JSON にして返す。"""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.calls: list[list[int]] = []
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        items = json.loads(kwargs["messages"][1]["content"].split("件)\n", 1)[1].split("\n\n")[0])
+        self.calls.append([it["item_no"] for it in items])
+        content = json.dumps({"results": self.answer(items)}, ensure_ascii=False)
+        message = SimpleNamespace(content=content, refusal=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")])
+
+
+def make_items(n):
+    return [{"item_no": i, "check_item": f"項目{i}", "viewpoint": f"観点{i}"} for i in range(1, n + 1)]
+
+
+def all_ok(items):
+    return [{"item_no": it["item_no"], "status": "OK", "evidence": "画面遷移図を以下に示す。", "suggestion": ""} for it in items]
+
+
+def test_run_review_batches_by_10_and_builds_result():
+    client = FakeClient(all_ok)
+    result = run_review("基本設計", make_items(25), BODY, "設計書.docx", client=client)
+
+    assert sorted(len(c) for c in client.calls) == [5, 10, 10]  # バッチは同時に投げるので順不同
+    assert result["phase"] == "基本設計" and result["file_name"] == "設計書.docx"
+    assert result["summary"] == {"ok": 25, "ng": 0}
+    assert result["truncated"] is False and result["original_chars"] == len(BODY)
+    first = result["results"][0]
+    assert first["check_item"] == "項目1" and first["viewpoint"] == "観点1" and first["evidence_found"] is True
+
+
+def test_run_review_retries_missing_items_once():
+    def skip_item_2_first_time(items):
+        if len(items) > 1:
+            return [r for r in all_ok(items) if r["item_no"] != 2]
+        return all_ok(items)
+
+    client = FakeClient(skip_item_2_first_time)
+    result = run_review("基本設計", make_items(3), BODY, client=client)
+    assert client.calls == [[1, 2, 3], [2]]
+    assert [r["status"] for r in result["results"]] == ["OK", "OK", "OK"]
+
+
+def test_run_review_marks_items_never_returned():
+    client = FakeClient(lambda items: [])
+    result = run_review("基本設計", make_items(1), BODY, client=client)
+    assert result["results"][0]["status"] == "NG"
+    assert result["results"][0]["suggestion"] == engine.NOT_JUDGED_SUGGESTION
+
+
+def test_run_review_truncates_long_text(monkeypatch):
+    monkeypatch.setattr(engine, "MAX_DOC_CHARS", 10)
+    client = FakeClient(all_ok)
+    result = run_review("基本設計", make_items(1), "あ" * 25, client=client)
+    assert result["truncated"] is True and result["original_chars"] == 25
+
+
+def test_validate_result_checks_evidence_and_cleans():
+    items = make_items(5)
+    raw = [
+        {"item_no": 1, "status": "OK", "evidence": "「3.2 画面遷移図を以下に示す。」", "suggestion": "不要な提案"},
+        {"item_no": 2, "status": "NG", "evidence": "エラー時は再試行する。", "suggestion": "追記してください。"},
+        {"item_no": 3, "status": "NG", "evidence": "(該当する記述なし)", "suggestion": "追記してください。"},
+        {"item_no": 4, "status": "OK", "evidence": "ログイン画面から…へ遷移する。", "suggestion": ""},
+        {"item_no": 99, "status": "OK", "evidence": "", "suggestion": ""},   # 渡していない番号は捨てる
+        {"item_no": 1, "status": "NG", "evidence": "", "suggestion": ""},    # 2 件目は捨てる
+    ]
+    judged, missing = validate_result(items, raw, BODY)
+
+    assert missing == {5}  # 返ってこなかった項目
+    assert judged[1]["evidence_found"] is True and judged[1]["suggestion"] == ""  # かぎかっこ付きでも照合できる
+    assert judged[2]["evidence_found"] is False   # 本文にない根拠
+    assert judged[3]["evidence_found"] is True    # NG で「該当なし」は照合不要
+    assert judged[4]["evidence_found"] is True    # 「…」で省略されていても断片がすべて本文にある
+    assert 99 not in judged
+
+
+def test_ok_without_evidence_is_flagged():
+    judged, _ = validate_result(make_items(1), [{"item_no": 1, "status": "OK", "evidence": NO_EVIDENCE, "suggestion": ""}], BODY)
+    assert judged[1]["evidence_found"] is False
+
+
+def test_build_messages_puts_items_before_document():
+    messages = engine.build_messages("要件定義", make_items(2), "本文です。")
+    assert "「要件定義」工程" in messages[0]["content"]
+    user = messages[1]["content"]
+    assert user.index("チェック項目") < user.index("<document>") and "本文です。" in user
+
+
+def test_missing_api_key_raises(monkeypatch):
+    import dotenv
+
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: False)  # 本物の .env を読ませない
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(ReviewError, match="API キー"):
+        run_review("基本設計", make_items(1), BODY)
+
+
+def test_run_review_without_items_raises():
+    with pytest.raises(ReviewError):
+        run_review("基本設計", [], BODY, client=FakeClient(all_ok))
+
+
+def test_run_review_retries_ok_with_unverified_evidence():
+    """OK なのに根拠が本文にない回答は、1 回だけ判定し直す。"""
+    answers = iter([
+        [{"item_no": 1, "status": "OK", "evidence": "本文にない文", "suggestion": ""}],
+        [{"item_no": 1, "status": "NG", "evidence": NO_EVIDENCE, "suggestion": "追記してください。"}],
+    ])
+    client = FakeClient(lambda items: next(answers))
+    result = run_review("基本設計", make_items(1), BODY, client=client)
+    assert len(client.calls) == 2
+    assert result["results"][0]["status"] == "NG" and result["results"][0]["evidence_found"] is True
+
+
+def test_normalize_text_fixes_pdf_characters():
+    assert loader.normalize_text("情報システム部⻑ 受注‧販売 件∕年") == "情報システム部長 受注・販売 件/年"

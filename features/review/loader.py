@@ -132,9 +132,22 @@ def _extract_with_parser(ext: str, data: bytes) -> str:
             pass
 
 
+# NFKC では普通の文字にならないが、PDF から取り出すと混ざりやすい文字
+# (CJK 部首補助の「⻑」など、英語用の中点「‧」、割り算の斜線「∕」)
+_EXTRA_NORMALIZE = str.maketrans({
+    "⻑": "長", "⻄": "西", "⻘": "青", "⻝": "食", "⻤": "鬼", "⻣": "骨",
+    "⻩": "黄", "⻭": "歯", "⻆": "角", "⻁": "虎", "⻌": "辶", "‧": "・", "∕": "/",
+})
+
+
+def normalize_text(text: str) -> str:
+    """NFKC 正規化に加えて、NFKC で直らない文字もそろえる(根拠の照合でも同じ関数を使う)。"""
+    return unicodedata.normalize("NFKC", text).translate(_EXTRA_NORMALIZE)
+
+
 def _clean(text: str) -> str:
-    """NFKC 正規化・改行コードの統一・行末の空白除去・3 行以上の空行を 1 行にまとめる。"""
-    text = unicodedata.normalize("NFKC", text).replace("\r\n", "\n").replace("\r", "\n")
+    """文字の正規化・改行コードの統一・行末の空白除去・3 行以上の空行を 1 行にまとめる。"""
+    text = normalize_text(text).replace("\r\n", "\n").replace("\r", "\n")
     text = "\n".join(line.rstrip() for line in text.split("\n"))
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
