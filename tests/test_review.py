@@ -4,6 +4,7 @@
 DB はテストごとの一時フォルダに作るので、本番の data/review.db は汚さない。
 """
 
+import io
 import sqlite3
 import sys
 from pathlib import Path
@@ -160,3 +161,71 @@ def test_failed_replace_keeps_old_items(db_path):
         import_checklist("基本設計", broken, "r", db_path=db_path)
 
     assert [it["check_item"] for it in db.get_review_items("基本設計", db_path=db_path)] == ["元の項目"]
+
+
+# ---------------------------------------------------------------- 文書の読み込み(loader)
+
+from docx import Document  # noqa: E402
+
+from features.review import loader  # noqa: E402
+from features.review.loader import LoaderError, load_bytes, parse_google_url  # noqa: E402
+
+
+@pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-8", "cp932"])
+def test_decode_text_detects_encoding(encoding):
+    text = "要件定義書　第1章 はじめに"
+    assert loader._decode_text(text.encode(encoding)) == text
+
+
+def test_load_txt_in_shift_jis():
+    assert load_bytes("memo.txt", "画面遷移図を以下に示す。".encode("cp932")) == "画面遷移図を以下に示す。"
+
+
+def test_load_csv_joins_cells():
+    data = "No,項目\n1,ログイン画面\n\n2,一覧画面\n".encode("utf-8-sig")
+    assert load_bytes("list.csv", data) == "No | 項目\n1 | ログイン画面\n2 | 一覧画面"
+
+
+def test_load_docx_reads_tables_in_order():
+    doc = Document()
+    doc.add_paragraph("1.2 システム化の方針")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text, table.cell(0, 1).text = "区分", "方針"
+    table.cell(1, 0).text, table.cell(1, 1).text = "基盤方針", "クラウド上に構築する"
+    doc.add_paragraph("1.3 設計対象範囲")
+    buf = io.BytesIO()
+    doc.save(buf)
+
+    assert load_bytes("design.docx", buf.getvalue()) == (
+        "1.2 システム化の方針\n区分 | 方針\n基盤方針 | クラウド上に構築する\n1.3 設計対象範囲"
+    )
+
+
+def test_load_normalizes_radicals():
+    """PDF に混ざる部首文字(⽬ U+2F6C)は通常の漢字(目)にそろえる。"""
+    assert load_bytes("a.txt", "⽬次".encode("utf-8")) == "目次"
+
+
+def test_load_rejects_unsupported_and_empty():
+    with pytest.raises(LoaderError, match="対応していません"):
+        load_bytes("image.png", b"\x89PNG")
+    with pytest.raises(LoaderError, match="抽出できませんでした"):
+        load_bytes("empty.txt", b"  \n ")
+
+
+def test_parse_google_url():
+    assert parse_google_url("https://docs.google.com/document/d/abc_123-XYZ/edit?usp=sharing") == ("document", "abc_123-XYZ")
+    assert parse_google_url("https://docs.google.com/spreadsheets/d/S1/edit#gid=0") == ("spreadsheets", "S1")
+    with pytest.raises(LoaderError):
+        parse_google_url("https://example.com/document/d/abc")
+
+
+def test_fetch_google_doc_without_credentials(monkeypatch):
+    import utils.google_drive as gd
+
+    def no_credentials():
+        raise FileNotFoundError("credentials.json")
+
+    monkeypatch.setattr(gd, "get_drive_service", no_credentials)
+    with pytest.raises(LoaderError, match="credentials.json"):
+        loader.fetch_google_doc("https://docs.google.com/document/d/abc/edit")

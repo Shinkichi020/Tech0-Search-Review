@@ -2,7 +2,7 @@
 
 画面は 2 タブ:
   レビュワー: ログイン → 工程を選ぶ → レビュー項目 Excel を登録
-  レビューイ: 工程を選ぶ → 文書を提出 → AI が評価(提出と評価は今後実装)
+  レビューイ: 工程を選ぶ → 文書を提出 → AI が評価
 
 このファイルは画面だけを担当し、処理は features/review/ にまとめる。
 import した時点では DB にも OpenAI にも接続しない(test_switcher.py が import するため)。
@@ -17,8 +17,11 @@ from features.review import db
 from features.review.auth import verify_login
 from features.review.checklist_loader import ChecklistError, import_checklist, parse_excel
 from features.review.config import PHASES
+from features.review.loader import LoaderError, load_uploaded
 
 FEATURE_KEY = "review"
+
+_DOC_TYPES = ["docx", "xlsx", "pptx", "pdf", "txt", "csv"]
 
 # 画面用 CSS。他機能に漏れないよう .review- で始まるクラスだけに当てる。
 # 色は shell が用意した CSS 変数(--panel / --line / --ink / --muted / --blue)を使う。
@@ -47,6 +50,8 @@ def _init_state() -> None:
     st.session_state.setdefault("review_reviewer", None)   # ログイン中のレビュワー(パスワードは持たない)
     st.session_state.setdefault("review_text", "")         # 提出文書から抽出したテキスト
     st.session_state.setdefault("review_file_sig", None)   # 提出ファイルの「名前+サイズ」(再抽出の抑制用)
+    st.session_state.setdefault("review_file_name", None)  # 提出ファイルの名前(結果と Excel に載せる)
+    st.session_state.setdefault("review_load_error", None) # 抽出に失敗したときのメッセージ
     st.session_state.setdefault("review_result", None)     # 評価結果の JSON
     st.session_state.setdefault("review_upload_ver", 0)    # 登録後にアップローダーを空に戻すための番号
     st.session_state.setdefault("review_flash", None)      # 再実行をまたいで出す完了メッセージ
@@ -211,4 +216,48 @@ def _render_reviewee_tab() -> None:
     else:
         st.warning("この工程にはまだレビュー項目が登録されていません。レビュワーに登録を依頼してください。")
 
-    st.info("文書の提出と AI による評価は準備中です。")
+    uploaded = st.file_uploader(
+        "レビューを受ける文書",
+        type=_DOC_TYPES,
+        key="review_doc_file",
+        help="Word・Excel・PowerPoint・PDF・テキスト・CSV に対応しています。",
+    )
+    _sync_document(uploaded)
+
+    if st.session_state.review_load_error:
+        st.error(st.session_state.review_load_error)
+        return
+    text = st.session_state.review_text
+    if not text:
+        return
+
+    st.markdown(f"**抽出したテキスト**：{len(text):,} 字")
+    with st.container(height=320, border=True):
+        st.text(text)
+
+    st.info("AI による評価は準備中です。")
+
+
+def _sync_document(uploaded) -> None:
+    """アップロードが変わったときだけテキストを抽出し直す。
+
+    Streamlit はボタンを押すたびに全体を再実行するので、毎回抽出すると遅い。
+    「名前+サイズ」を review_file_sig に覚えておき、変わったときだけ読み直す。
+    文書が変わったら、前の文書の評価結果は消す。
+    """
+    sig = (uploaded.name, uploaded.size) if uploaded is not None else None
+    if sig == st.session_state.review_file_sig:
+        return
+    st.session_state.review_file_sig = sig
+    st.session_state.review_text = ""
+    st.session_state.review_file_name = None
+    st.session_state.review_load_error = None
+    st.session_state.review_result = None
+    if uploaded is None:
+        return
+    try:
+        with st.spinner("文書を読み込んでいます…"):
+            st.session_state.review_text = load_uploaded(uploaded)
+        st.session_state.review_file_name = uploaded.name
+    except LoaderError as e:
+        st.session_state.review_load_error = str(e)
