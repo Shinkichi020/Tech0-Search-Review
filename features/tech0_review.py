@@ -1,13 +1,14 @@
 """Tech0 Review — 担当: おのちゃん
 
-画面は 2 タブ:
-  レビュワー: ログイン → 工程を選ぶ → レビュー項目 Excel を登録
-  レビューイ: 工程を選ぶ → 文書を提出 → AI が評価(提出と評価は今後実装)
+画面は 2 タブ(利用者が最初に見るのは 1 つ目):
+  ドキュメントレビュー実施     : 工程を選ぶ → 文書を提出 → AI が評価(ログイン不要。コード上は reviewee)
+  レビュー項目の登録(管理用)   : ログイン → 工程を選ぶ → レビュー項目 Excel を登録(コード上は reviewer)
 
 このファイルは画面だけを担当し、処理は features/review/ にまとめる。
 import した時点では DB にも OpenAI にも接続しない(test_switcher.py が import するため)。
 """
 
+import html
 import io
 import sqlite3
 
@@ -16,9 +17,14 @@ import streamlit as st
 from features.review import db
 from features.review.auth import verify_login
 from features.review.checklist_loader import ChecklistError, import_checklist, parse_excel
-from features.review.config import PHASES
+from features.review.config import MAX_DOC_CHARS, PHASES
+from features.review.engine import ReviewError, run_review
+from features.review.exporter import build_result_xlsx, result_file_name
+from features.review.loader import LoaderError, fetch_google_doc, load_uploaded
 
 FEATURE_KEY = "review"
+
+_DOC_TYPES = ["docx", "xlsx", "pptx", "pdf", "txt", "csv"]
 
 # 画面用 CSS。他機能に漏れないよう .review- で始まるクラスだけに当てる。
 # 色は shell が用意した CSS 変数(--panel / --line / --ink / --muted / --blue)を使う。
@@ -38,6 +44,34 @@ _CSS = """
   /* 入力欄の背景が下地(--canvas)と同色で見えにくいので、各タブの中身を白いパネルに載せる。
      「st-key-キー名」は st.container(key=...) に Streamlit が付けるクラス。 */
   [class*="st-key-review_panel_"] { background: var(--panel); }
+
+  /* レビュー結果 */
+  .review-badge {
+    display: inline-block; min-width: 34px; text-align: center;
+    font-size: 11.5px; font-weight: 700; border-radius: 999px; padding: 1px 9px;
+  }
+  .review-badge.is-ok { background: #E2F4EA; color: #23804F; }
+  .review-badge.is-ng { background: #FBE6E3; color: #B93A2E; }
+  .review-summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 2px 0 8px; font-size: 14px; }
+  .review-summary b { font-size: 18px; margin-right: 10px; }
+  .review-summary-meta { color: var(--muted); font-size: 12.5px; }
+  .review-card {
+    background: var(--panel); border: 1px solid var(--line); border-left-width: 4px;
+    border-radius: 8px; padding: 10px 14px; margin: 0 0 10px; font-size: 13.5px; color: var(--ink);
+  }
+  .review-card.is-ok { border-left-color: #23804F; }
+  .review-card.is-ng { border-left-color: #B93A2E; }
+  .review-card-head { display: flex; align-items: baseline; gap: 8px; }
+  .review-card-no { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .review-card-title { font-weight: 700; }
+  .review-card-vp { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  .review-card-label { color: var(--muted); font-size: 11.5px; font-weight: 700; margin-top: 8px; }
+  .review-card-quote { background: #FAFAFA; border-left: 3px solid var(--line); padding: 4px 10px; margin-top: 2px; }
+  .review-card-text { margin-top: 2px; }
+  .review-card-note {
+    display: inline-block; margin-top: 6px; font-size: 12px; color: #8A6200;
+    background: #FFF6DC; border-radius: 4px; padding: 1px 8px;
+  }
 </style>
 """
 
@@ -47,6 +81,8 @@ def _init_state() -> None:
     st.session_state.setdefault("review_reviewer", None)   # ログイン中のレビュワー(パスワードは持たない)
     st.session_state.setdefault("review_text", "")         # 提出文書から抽出したテキスト
     st.session_state.setdefault("review_file_sig", None)   # 提出ファイルの「名前+サイズ」(再抽出の抑制用)
+    st.session_state.setdefault("review_file_name", None)  # 提出ファイルの名前(結果と Excel に載せる)
+    st.session_state.setdefault("review_load_error", None) # 抽出に失敗したときのメッセージ
     st.session_state.setdefault("review_result", None)     # 評価結果の JSON
     st.session_state.setdefault("review_upload_ver", 0)    # 登録後にアップローダーを空に戻すための番号
     st.session_state.setdefault("review_flash", None)      # 再実行をまたいで出す完了メッセージ
@@ -60,11 +96,11 @@ def render() -> None:
     st.markdown("## ◫ Tech0 Review")
     st.caption("SI 工程ごとのレビュー項目に照らして、提出された文書を AI が項目ごとに判定します。")
 
-    tab_reviewer, tab_reviewee = st.tabs(["レビュワー", "レビューイ"])
-    with tab_reviewer, st.container(border=True, key="review_panel_reviewer"):
-        _render_reviewer_tab()
+    tab_reviewee, tab_reviewer = st.tabs(["ドキュメントレビュー実施", "レビュー項目の登録(管理用)"])
     with tab_reviewee, st.container(border=True, key="review_panel_reviewee"):
         _render_reviewee_tab()
+    with tab_reviewer, st.container(border=True, key="review_panel_reviewer"):
+        _render_reviewer_tab()
 
 
 # ---------------------------------------------------------------- 共通部品
@@ -199,6 +235,9 @@ def _show_items_table(items: list[dict]) -> None:
 
 # ---------------------------------------------------------------- レビューイ
 
+_SOURCE_FILE = "ファイルをアップロード"
+_SOURCE_URL = "Google ドキュメントの URL"
+
 def _render_reviewee_tab() -> None:
     counts = _load_counts()
     if counts is None:
@@ -211,4 +250,200 @@ def _render_reviewee_tab() -> None:
     else:
         st.warning("この工程にはまだレビュー項目が登録されていません。レビュワーに登録を依頼してください。")
 
-    st.info("文書の提出と AI による評価は準備中です。")
+    source = st.radio(
+        "提出方法",
+        [_SOURCE_FILE, _SOURCE_URL],
+        horizontal=True,
+        key="review_source",
+        on_change=_reset_document,  # 提出方法を切り替えたら、読み込んだ文書と結果を消す
+    )
+    if source == _SOURCE_FILE:
+        uploaded = st.file_uploader(
+            "レビューを受ける文書",
+            type=_DOC_TYPES,
+            key="review_doc_file",
+            help="Word・Excel・PowerPoint・PDF・テキスト・CSV に対応しています。",
+        )
+        _sync_document(uploaded)
+    else:
+        _render_url_input()
+
+    if st.session_state.review_load_error:
+        st.error(st.session_state.review_load_error)
+        return
+    text = st.session_state.review_text
+    if not text:
+        return
+
+    st.markdown(f"**抽出したテキスト**：{len(text):,} 字（{st.session_state.review_file_name}）")
+    with st.container(height=280, border=True):
+        st.text(text)
+    if len(text) > MAX_DOC_CHARS:
+        st.warning(f"文書が長いため（{len(text):,} 字）、先頭 {MAX_DOC_CHARS:,} 字までを評価します。")
+
+    if st.button(
+        f"AI でレビューする（{n} 項目）" if n else "AI でレビューする",
+        key="review_run",
+        type="primary",
+        disabled=n == 0,  # レビュー項目が 0 件の工程では実行できない
+    ):
+        _run_review(phase, text)
+
+    result = st.session_state.review_result
+    if result and result["phase"] == phase:  # 工程を切り替えたら、別工程の結果は出さない
+        _render_result(result)
+
+
+def _run_review(phase: str, text: str) -> None:
+    """DB からその工程の項目を読み、AI で判定して結果を review_result に入れる。"""
+    try:
+        items = db.get_review_items(phase)
+    except sqlite3.Error as e:
+        st.error(f"レビュー項目の DB を開けませんでした（{e}）。")
+        return
+
+    bar = st.progress(0.0, text=f"AI が判定しています…（0 / {len(items)} 項目）")
+
+    def show_progress(done: int, total: int) -> None:
+        bar.progress(done / total, text=f"AI が判定しています…（{done} / {total} 項目）")
+
+    try:
+        result = run_review(
+            phase, items, text, st.session_state.review_file_name or "", on_progress=show_progress
+        )
+    except ReviewError as e:
+        st.error(str(e))
+        return
+    finally:
+        bar.empty()
+    st.session_state.review_result = result
+
+
+def _reset_document() -> None:
+    st.session_state.review_file_sig = None
+    st.session_state.review_text = ""
+    st.session_state.review_file_name = None
+    st.session_state.review_load_error = None
+    st.session_state.review_result = None
+
+
+def _sync_document(uploaded) -> None:
+    """アップロードが変わったときだけテキストを抽出し直す。
+
+    Streamlit はボタンを押すたびに全体を再実行するので、毎回抽出すると遅い。
+    「名前+サイズ」を review_file_sig に覚えておき、変わったときだけ読み直す。
+    文書が変わったら、前の文書の評価結果は消す。
+    """
+    sig = (uploaded.name, uploaded.size) if uploaded is not None else None
+    if sig == st.session_state.review_file_sig:
+        return
+    _reset_document()
+    st.session_state.review_file_sig = sig
+    if uploaded is None:
+        return
+    try:
+        with st.spinner("文書を読み込んでいます…"):
+            st.session_state.review_text = load_uploaded(uploaded)
+        st.session_state.review_file_name = uploaded.name
+    except LoaderError as e:
+        st.session_state.review_load_error = str(e)
+
+
+def _render_url_input() -> None:
+    col_url, col_btn = st.columns([5, 1], vertical_alignment="bottom")
+    with col_url:
+        url = st.text_input(
+            "Google ドキュメント／スプレッドシート／スライドの URL",
+            key="review_doc_url",
+            placeholder="https://docs.google.com/document/d/…",
+        )
+    with col_btn:
+        clicked = st.button("取り込む", key="review_fetch", use_container_width=True, disabled=not url.strip())
+    if not clicked:
+        return
+    _reset_document()
+    try:
+        with st.spinner("Google ドライブから文書を取り込んでいます…"):
+            name, text = fetch_google_doc(url)
+    except LoaderError as e:
+        st.session_state.review_load_error = str(e)
+        return
+    st.session_state.review_file_sig = ("url", url.strip())
+    st.session_state.review_text = text
+    st.session_state.review_file_name = name
+
+
+# ---------------------------------------------------------------- 結果の表示
+
+def _render_result(result: dict) -> None:
+    summary = result["summary"]
+    st.markdown("#### レビュー結果")
+    st.markdown(
+        '<div class="review-summary">'
+        f'<span class="review-badge is-ok">OK</span><b>{summary["ok"]}</b>件'
+        f'<span class="review-badge is-ng">NG</span><b>{summary["ng"]}</b>件'
+        f'<span class="review-summary-meta">{_esc(result["phase"])}／{_esc(result.get("file_name") or "")}</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    if result.get("truncated"):
+        st.warning(f"文書が長いため（{result['original_chars']:,} 字）、先頭 {MAX_DOC_CHARS:,} 字までを評価しました。")
+    st.caption("AI による一次レビューの結果です。最終判断は品質保証部の品質チェック会議で行ってください。")
+
+    col_filter, col_dl = st.columns([3, 2], vertical_alignment="center")
+    with col_filter:
+        shown = st.segmented_control(
+            "表示する項目",
+            ["すべて", "NG のみ", "OK のみ"],
+            default="すべて",
+            key="review_result_filter",
+            label_visibility="collapsed",
+        )
+    with col_dl:
+        st.download_button(
+            "結果を Excel でダウンロード",
+            data=build_result_xlsx(result),
+            file_name=result_file_name(result),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="review_download",
+            use_container_width=True,
+        )
+
+    wanted = {"NG のみ": {"NG"}, "OK のみ": {"OK"}}.get(shown or "すべて", {"OK", "NG"})
+    cards = [_card_html(r) for r in result["results"] if r["status"] in wanted]
+    if cards:
+        st.markdown("".join(cards), unsafe_allow_html=True)
+    else:
+        st.caption("該当する項目はありません。")
+
+
+def _card_html(r: dict) -> str:
+    """結果 1 件分のカード。本文や AI の回答はそのまま HTML に入れず、必ずエスケープする。"""
+    status_class = "is-ok" if r["status"] == "OK" else "is-ng"
+    parts = [
+        f'<div class="review-card {status_class}">',
+        '<div class="review-card-head">'
+        f'<span class="review-badge {status_class}">{r["status"]}</span>'
+        f'<span class="review-card-no">No.{r["item_no"]}</span>'
+        f'<span class="review-card-title">{_esc(r["check_item"])}</span></div>',
+    ]
+    if r.get("viewpoint"):
+        parts.append(f'<div class="review-card-vp">観点：{_esc(r["viewpoint"])}</div>')
+    parts.append(
+        '<div class="review-card-label">根拠（本文からの抜粋）</div>'
+        f'<div class="review-card-quote">{_esc(r["evidence"])}</div>'
+    )
+    if not r.get("evidence_found", True):
+        parts.append('<div class="review-card-note">根拠を本文で確認できませんでした</div>')
+    if r["status"] == "NG" and r.get("suggestion"):
+        parts.append(
+            '<div class="review-card-label">改善提案</div>'
+            f'<div class="review-card-text">{_esc(r["suggestion"])}</div>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _esc(text) -> str:
+    """HTML として解釈されないようにエスケープし、改行は <br> にする。"""
+    return html.escape(str(text)).replace("\n", "<br>")
