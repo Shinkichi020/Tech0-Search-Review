@@ -69,7 +69,7 @@ def load_bytes(file_name: str, data: bytes) -> str:
     text = _clean(text)
     if not text:
         raise LoaderError(
-            "文書からテキストを抽出できませんでした。画像だけの PDF やパスワード付きのファイルは読み取れません。"
+            "文書からテキストを抽出できませんでした。画像だけの PDF やパスワード付き、中身が空のファイルは読み取れません。"
         )
     return text
 
