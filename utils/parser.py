@@ -2,10 +2,11 @@
 
 import os
 from pathlib import Path
-from pypdf import PdfReader
 from docx import Document
 import openpyxl
 from pptx import Presentation
+from pypdf import PdfReader
+
 
 def extract_text_from_file(file_path: str) -> str:
     """指定されたパスのファイルからテキストを読み出して返す"""
@@ -16,8 +17,28 @@ def extract_text_from_file(file_path: str) -> str:
     try:
         # テキストファイル (.txt)
         if ext == ".txt":
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
+            with open(path, "rb") as f:
+                raw_bytes = f.read()
+
+            encodings = [
+                "utf-8-sig",
+                "utf-8",
+                "cp932",
+                "shift_jis",
+                "utf-16",
+                "euc-jp",
+            ]
+            for enc in encodings:
+                try:
+                    decoded = raw_bytes.decode(enc)
+                    if decoded.strip():
+                        text = decoded
+                        break
+                except Exception:
+                    continue
+
+            if not text and raw_bytes:
+                text = raw_bytes.decode("utf-8", errors="replace")
 
         # PDF ファイル (.pdf)
         elif ext == ".pdf":
@@ -32,15 +53,29 @@ def extract_text_from_file(file_path: str) -> str:
             doc = Document(path)
             text = "\n".join([p.text for p in doc.paragraphs if p.text])
 
-        # Excel ファイル (.xlsx)
+        # Excel ファイル (.xlsx) — 全セルを確実に抽出する強化版
         elif ext == ".xlsx":
             wb = openpyxl.load_workbook(path, data_only=True)
+            excel_texts = []
             for sheet in wb.sheetnames:
                 ws = wb[sheet]
+                sheet_text = f"【シート名: {sheet}】\n"
+                rows_data = []
                 for row in ws.iter_rows(values_only=True):
-                    row_text = " ".join([str(cell) for cell in row if cell is not None])
-                    if row_text.strip():
-                        text += row_text + "\n"
+                    # 空セルを除外して文字列化
+                    row_cells = [
+                        str(cell).strip()
+                        for cell in row
+                        if cell is not None and str(cell).strip() != ""
+                    ]
+                    if row_cells:
+                        rows_data.append(" | ".join(row_cells))
+
+                if rows_data:
+                    sheet_text += "\n".join(rows_data) + "\n"
+                    excel_texts.append(sheet_text)
+
+            text = "\n\n".join(excel_texts)
 
         # PowerPoint ファイル (.pptx)
         elif ext == ".pptx":
@@ -70,11 +105,13 @@ def load_all_documents(folder_path: str = "dummy_data") -> list[dict]:
         if file_p.is_file() and file_p.suffix.lower() in supported_exts:
             content = extract_text_from_file(str(file_p))
             if content:
-                documents.append({
-                    "id": file_p.name,
-                    "filename": file_p.name,
-                    "content": content,
-                    "path": str(file_p)
-                })
+                documents.append(
+                    {
+                        "id": file_p.name,
+                        "filename": file_p.name,
+                        "content": content,
+                        "path": str(file_p),
+                    }
+                )
 
     return documents

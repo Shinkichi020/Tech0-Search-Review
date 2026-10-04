@@ -1,5 +1,4 @@
-"""
-Google Drive API / OAuth 2.0 共通認証・操作モジュール
+"""Google Drive API / OAuth 2.0 共通認証・操作モジュール
 担当: たくちゃん (Tech0-Search-Review)
 """
 
@@ -64,7 +63,8 @@ def list_files_in_folder(
         folder_id (str): Google Drive のフォルダID
 
     Returns:
-        List[Dict[str, Any]]: ファイルのリスト [{'id': ..., 'name': ..., 'mimeType': ...}]
+        List[Dict[str, Any]]: ファイルのリスト [{'id': ..., 'name': ...,
+        'mimeType': ...}]
     """
     service = get_drive_service()
 
@@ -84,17 +84,29 @@ def list_files_in_folder(
     return results.get("files", [])
 
 
-def download_file(file_id: str) -> bytes:
+def download_file(file_id: str, mime_type: str = None) -> bytes:
     """Google Drive 上のファイルをバイナリデータとしてダウンロードする関数。
+
+    Google ドキュメント形式の場合はテキスト形式（text/plain）にエクスポートして取得します。
 
     Args:
         file_id (str): Google Drive のファイルID
+        mime_type (str, optional): ファイルの MIME タイプ
 
     Returns:
-        bytes: ファイルのバイナリデータ
+        bytes: ファイルのバイナリ（またはテキスト）データ
     """
     service = get_drive_service()
-    request = service.files().get_media(fileId=file_id)
+
+    # Google ドキュメント（Google Docs）形式の場合
+    if mime_type == "application/vnd.google-apps.document":
+        request = service.files().export_media(
+            fileId=file_id, mimeType="text/plain"
+        )
+    else:
+        # 通常のバイナリファイル（PDF, docx, xlsx, pptx 等）
+        request = service.files().get_media(fileId=file_id)
+
     file_stream = io.BytesIO()
     downloader = MediaIoBaseDownload(file_stream, request)
 

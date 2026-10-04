@@ -47,22 +47,3 @@ python test_switcher.py
 1. `shell/feature_switcher.py` の `FEATURES` に1行追加
 2. `shell/registry.py` の `MODULES` に `key → features.<モジュール>` を追加
 3. `features/<モジュール>.py` に `render()` を用意
-
-## Tech0 Review（担当: おのちゃん）
-
-SI 工程ごとのレビュー項目（Excel）に照らして、提出文書を AI（gpt-4.1-mini）が項目ごとに OK/NG 判定します。
-
-### 準備
-- リポジトリ直下の `.env` に `OPENAI_API_KEY=…` を書く（Git には含めない）
-- レビュワーを登録する（画面からは登録できません）
-  `python create_reviewer.py <ユーザー名> --display-name 表示名`
-
-### 使い方
-1. **レビュー項目の登録(管理用)** タブ：ログイン → 工程を選ぶ → レビュー項目 Excel（No／チェック項目／観点）をアップロード → 登録
-2. **ドキュメントレビュー実施** タブ：工程を選ぶ → 文書をアップロード（docx／xlsx／pptx／pdf／txt／csv）または Google ドキュメントの URL → 「AI でレビューする」→ 結果カードを確認 → Excel でダウンロード
-
-### 補足
-- レビュワーとレビュー項目は `data/review.db`（SQLite）に保存します。レビュー結果は保存しません
-- 文書は先頭 10 万字までを評価します
-- Google ドキュメントの取り込みには、リポジトリ直下の `credentials.json` が必要です（初回はブラウザで認証）
-- テスト：`python -m pytest tests/test_review.py`
