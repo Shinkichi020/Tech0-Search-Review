@@ -14,19 +14,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from features.review import auth, db  # noqa: E402
+from features.review import db  # noqa: E402
 from features.review.checklist_loader import ChecklistError, import_checklist, parse_excel  # noqa: E402
 
 
 @pytest.fixture
 def db_path(tmp_path):
     return tmp_path / "review.db"
-
-
-@pytest.fixture(autouse=True)
-def fast_hash(monkeypatch):
-    """本番の 60 万回だとテストが遅いので、繰り返し回数を減らす(仕組みは同じ)。"""
-    monkeypatch.setattr(auth, "ITERATIONS", 1_000)
 
 
 def make_excel(path: Path, rows: list[list]) -> Path:
@@ -36,45 +30,6 @@ def make_excel(path: Path, rows: list[list]) -> Path:
         ws.append(row)
     wb.save(path)
     return path
-
-
-# ---------------------------------------------------------------- ハッシュ・認証
-
-def test_hash_is_reproducible_with_same_salt():
-    h1, salt = auth.hash_password("secret-pass")
-    h2, _ = auth.hash_password("secret-pass", salt)
-    assert h1 == h2
-    assert "secret-pass" not in h1
-
-
-def test_hash_differs_by_salt():
-    h1, s1 = auth.hash_password("secret-pass")
-    h2, s2 = auth.hash_password("secret-pass")
-    assert s1 != s2
-    assert h1 != h2
-
-
-def test_verify_login(db_path):
-    auth.register_reviewer("reviewer1", "correct-pass", "レビュワー1", db_path=db_path)
-
-    assert auth.verify_login("reviewer1", "correct-pass", db_path=db_path) == {
-        "username": "reviewer1",
-        "display_name": "レビュワー1",
-    }
-    assert auth.verify_login("reviewer1", "wrong-pass", db_path=db_path) is None
-    assert auth.verify_login("nobody", "correct-pass", db_path=db_path) is None
-
-
-def test_password_is_not_stored_in_plain_text(db_path):
-    auth.register_reviewer("reviewer1", "correct-pass", db_path=db_path)
-    row = db.get_reviewer("reviewer1", db_path=db_path)
-    assert "correct-pass" not in row.values()
-
-
-def test_duplicate_username_is_rejected(db_path):
-    auth.register_reviewer("reviewer1", "pass-1", db_path=db_path)
-    with pytest.raises(sqlite3.IntegrityError):
-        auth.register_reviewer("reviewer1", "pass-2", db_path=db_path)
 
 
 # ---------------------------------------------------------------- Excel 解析
@@ -137,28 +92,27 @@ def test_import_checklist_replaces_same_phase(db_path):
     first = [{"item_no": i, "check_item": f"項目{i}", "viewpoint": ""} for i in (1, 2, 3)]
     second = [{"item_no": 1, "check_item": "新しい項目", "viewpoint": "新しい観点"}]
 
-    import_checklist("基本設計", first, "reviewer1", db_path=db_path)
-    import_checklist("要件定義", first, "reviewer1", db_path=db_path)
-    import_checklist("基本設計", second, "reviewer1", db_path=db_path)
+    import_checklist("基本設計", first, db_path=db_path)
+    import_checklist("要件定義", first, db_path=db_path)
+    import_checklist("基本設計", second, db_path=db_path)
 
     assert db.count_items_by_phase(db_path=db_path) == {"基本設計": 1, "要件定義": 3}
     stored = db.get_review_items("基本設計", db_path=db_path)
     assert stored[0]["check_item"] == "新しい項目"
-    assert stored[0]["uploaded_by"] == "reviewer1"
 
 
 def test_import_checklist_rejects_unknown_phase(db_path):
     with pytest.raises(ValueError):
-        import_checklist("存在しない工程", [{"item_no": 1, "check_item": "x", "viewpoint": ""}], "r", db_path=db_path)
+        import_checklist("存在しない工程", [{"item_no": 1, "check_item": "x", "viewpoint": ""}], db_path=db_path)
 
 
 def test_failed_replace_keeps_old_items(db_path):
     """No が重複していて INSERT が失敗しても、元の項目は消えない(トランザクション)。"""
-    import_checklist("基本設計", [{"item_no": 1, "check_item": "元の項目", "viewpoint": ""}], "r", db_path=db_path)
+    import_checklist("基本設計", [{"item_no": 1, "check_item": "元の項目", "viewpoint": ""}], db_path=db_path)
     broken = [{"item_no": 1, "check_item": "A", "viewpoint": ""}, {"item_no": 1, "check_item": "B", "viewpoint": ""}]
 
     with pytest.raises(sqlite3.IntegrityError):
-        import_checklist("基本設計", broken, "r", db_path=db_path)
+        import_checklist("基本設計", broken, db_path=db_path)
 
     assert [it["check_item"] for it in db.get_review_items("基本設計", db_path=db_path)] == ["元の項目"]
 
@@ -168,7 +122,7 @@ def test_failed_replace_keeps_old_items(db_path):
 from docx import Document  # noqa: E402
 
 from features.review import loader  # noqa: E402
-from features.review.loader import LoaderError, load_bytes, parse_google_url  # noqa: E402
+from features.review.loader import LoaderError, load_bytes  # noqa: E402
 
 
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "utf-8", "cp932"])
@@ -211,84 +165,6 @@ def test_load_rejects_unsupported_and_empty():
         load_bytes("image.png", b"\x89PNG")
     with pytest.raises(LoaderError, match="抽出できませんでした"):
         load_bytes("empty.txt", b"  \n ")
-
-
-def test_parse_google_url():
-    assert parse_google_url("https://docs.google.com/document/d/abc_123-XYZ/edit?usp=sharing") == ("document", "abc_123-XYZ")
-    assert parse_google_url("https://docs.google.com/spreadsheets/d/S1/edit#gid=0") == ("spreadsheets", "S1")
-    with pytest.raises(LoaderError):
-        parse_google_url("https://example.com/document/d/abc")
-
-
-def test_fetch_google_doc_without_credentials(monkeypatch):
-    import utils.google_drive as gd
-
-    def no_credentials():
-        raise FileNotFoundError("credentials.json")
-
-    monkeypatch.setattr(gd, "get_drive_service", no_credentials)
-    with pytest.raises(LoaderError, match="credentials.json"):
-        loader.fetch_google_doc("https://docs.google.com/document/d/abc/edit")
-
-
-# ---------------------------------------------------------------- Excel 出力(exporter)
-
-from features.review.exporter import EVIDENCE_NOT_FOUND, build_result_xlsx, result_file_name  # noqa: E402
-
-SAMPLE_RESULT = {
-    "phase": "基本設計",
-    "file_name": "基本設計書_経費精算.docx",
-    "reviewed_at": "2026-10-01T14:05:12",
-    "summary": {"ok": 1, "ng": 2},
-    "truncated": False,
-    "original_chars": 1234,
-    "results": [
-        {"item_no": 1, "check_item": "画面遷移図が記載されている", "viewpoint": "主要画面の遷移が図示されているか",
-         "status": "OK", "evidence": "3.2 画面遷移図を以下に示す。", "suggestion": "", "evidence_found": True},
-        {"item_no": 2, "check_item": "エラー時の処理が定義されている", "viewpoint": "",
-         "status": "NG", "evidence": "(該当する記述なし)", "suggestion": "エラー時の方針を追記してください。",
-         "evidence_found": True},
-        {"item_no": 3, "check_item": "=SUM(A1:A2)", "viewpoint": "数式に見える文字列",
-         "status": "NG", "evidence": "本文にない文", "suggestion": "=HYPERLINK(\"x\")", "evidence_found": False},
-    ],
-}
-
-
-def _load_result_workbook(result):
-    return openpyxl.load_workbook(io.BytesIO(build_result_xlsx(result)))
-
-
-def test_build_result_xlsx_layout():
-    wb = _load_result_workbook(SAMPLE_RESULT)
-    assert wb.sheetnames == ["レビュー結果", "NG一覧"]
-    ws = wb["レビュー結果"]
-    assert [ws.cell(row=r, column=1).value for r in range(1, 6)] == ["工程", "対象ファイル", "実施日時", "判定件数", "注意"]
-    assert ws["B1"].value == "基本設計"
-    assert ws["B3"].value == "2026/10/01 14:05"
-    assert ws["B4"].value == "OK 1 件 ／ NG 2 件"
-    assert [c.value for c in ws[7]] == ["No", "チェック項目", "観点", "判定", "根拠（本文からの抜粋）", "改善提案", "備考"]
-    assert [ws.cell(row=r, column=4).value for r in (8, 9, 10)] == ["OK", "NG", "NG"]
-    assert ws["G10"].value == EVIDENCE_NOT_FOUND and ws["G8"].value is None
-    assert ws.freeze_panes == "A8"
-    assert ws.auto_filter.ref == "A7:G10"
-    assert [ws_row[0].value for ws_row in wb["NG一覧"].iter_rows(min_row=2)] == [2, 3]
-
-
-def test_build_result_xlsx_keeps_formula_like_text_as_text():
-    ws = _load_result_workbook(SAMPLE_RESULT)["レビュー結果"]
-    assert ws["B10"].value == "=SUM(A1:A2)" and ws["B10"].data_type == "s"
-    assert ws["F10"].data_type == "s"
-
-
-def test_build_result_xlsx_notes_truncation():
-    truncated = {**SAMPLE_RESULT, "truncated": True, "original_chars": 123456}
-    note = _load_result_workbook(truncated)["レビュー結果"]["B5"].value
-    assert "123,456 字" in note and "先頭 100,000 字" in note
-
-
-def test_result_file_name():
-    assert result_file_name(SAMPLE_RESULT) == "レビュー結果_基本設計_20261001_1405.xlsx"
-    assert result_file_name({**SAMPLE_RESULT, "phase": "a/b:c"}) == "レビュー結果_a_b_c_20261001_1405.xlsx"
 
 
 # ---------------------------------------------------------------- 評価(engine)。OpenAI はモック

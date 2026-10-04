@@ -93,7 +93,7 @@ def run_review(
     client=None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict:
-    """レビュー項目ごとに判定し、画面と Excel で使う結果データ(dict)を返す。
+    """レビュー項目ごとに判定し、画面で使う結果データ(dict)を返す。
 
     items は DB の項目({"item_no", "check_item", "viewpoint"})。
     on_progress(判定済みの件数, 全件数) は進み具合の表示用。
@@ -270,7 +270,7 @@ def _evidence_found(status: str, evidence: str, body: str) -> bool:
     """根拠が本文で確認できるか。
 
     「該当する記述なし」は、NG なら照合不要(書いていないことが根拠)なので True。
-    OK なのに根拠がないのは矛盾なので False(画面と Excel に注記が出る)。
+    OK なのに根拠がないのは矛盾なので False(画面のカードに注記が出る)。
     """
     if _squash(evidence) == _squash(NO_EVIDENCE):
         return status == "NG"
