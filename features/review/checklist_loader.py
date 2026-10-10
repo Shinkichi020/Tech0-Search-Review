@@ -126,7 +126,6 @@ def parse_excel(file: str | Path | BinaryIO) -> tuple[list[dict], list[str]]:
 def import_checklist(
     phase: str,
     items: list[dict],
-    reviewer: str,
     db_path: str | Path | None = None,
 ) -> int:
     """その工程のレビュー項目を丸ごと置き換えて登録し、件数を返す。"""
@@ -134,4 +133,4 @@ def import_checklist(
         raise ValueError(f"未知の工程です: {phase}")
     if not items:
         raise ValueError("登録するレビュー項目がありません。")
-    return db.replace_review_items(phase, items, reviewer, db_path)
+    return db.replace_review_items(phase, items, db_path)

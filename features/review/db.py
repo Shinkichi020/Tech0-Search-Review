@@ -23,36 +23,9 @@ def get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-# ---------------------------------------------------------------- レビュワー
-
-def add_reviewer(
-    username: str,
-    display_name: str | None,
-    password_hash: str,
-    salt: str,
-    db_path: str | Path | None = None,
-) -> None:
-    """レビュワーを 1 人追加する。同じ username があれば sqlite3.IntegrityError。"""
-    with closing(get_connection(db_path)) as conn, conn:
-        conn.execute(
-            "INSERT INTO reviewers (username, display_name, password_hash, salt) VALUES (?, ?, ?, ?)",
-            (username, display_name, password_hash, salt),
-        )
-
-
-def get_reviewer(username: str, db_path: str | Path | None = None) -> dict | None:
-    """username でレビュワーを 1 人取得する。いなければ None。"""
-    with closing(get_connection(db_path)) as conn:
-        row = conn.execute("SELECT * FROM reviewers WHERE username = ?", (username,)).fetchone()
-    return dict(row) if row else None
-
-
-# ---------------------------------------------------------------- レビュー項目
-
 def replace_review_items(
     phase: str,
     items: list[dict],
-    uploaded_by: str,
     db_path: str | Path | None = None,
 ) -> int:
     """その工程のレビュー項目を丸ごと置き換え、登録した件数を返す。
@@ -63,8 +36,8 @@ def replace_review_items(
     with closing(get_connection(db_path)) as conn, conn:
         conn.execute("DELETE FROM review_items WHERE phase = ?", (phase,))
         conn.executemany(
-            "INSERT INTO review_items (phase, item_no, check_item, viewpoint, uploaded_by) VALUES (?, ?, ?, ?, ?)",
-            [(phase, it["item_no"], it["check_item"], it.get("viewpoint"), uploaded_by) for it in items],
+            "INSERT INTO review_items (phase, item_no, check_item, viewpoint) VALUES (?, ?, ?, ?)",
+            [(phase, it["item_no"], it["check_item"], it.get("viewpoint")) for it in items],
         )
     return len(items)
 
@@ -73,7 +46,7 @@ def get_review_items(phase: str, db_path: str | Path | None = None) -> list[dict
     """その工程のレビュー項目を No 順に返す。"""
     with closing(get_connection(db_path)) as conn:
         rows = conn.execute(
-            "SELECT item_no, check_item, viewpoint, uploaded_by, uploaded_at"
+            "SELECT item_no, check_item, viewpoint, uploaded_at"
             " FROM review_items WHERE phase = ? ORDER BY item_no",
             (phase,),
         ).fetchall()
