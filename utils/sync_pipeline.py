@@ -9,27 +9,39 @@ from utils.google_drive import download_file, list_files_in_folder
 from utils.parser import extract_text_from_file
 
 
-def split_text_into_chunks(text: str, chunk_size: int = 400, overlap: int = 50) -> list[str]:
-    """長文テキストを一定の文字数（チャンク）に分割する関数"""
+def split_text_into_chunks(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str]:
+    """長文テキストを、一定の文字数（チャンク）に分割する関数。
+
+    - 改行1つ（docx・pdf の段落区切り）でも区切れるよう、行単位で積み上げる
+    - chunk_size を超える長い行は、強制的に分割する
+    - 文脈が途切れないよう、直前のチャンクの末尾 overlap 文字を次のチャンクの先頭に重ねる
+    """
     if not text:
         return []
-    
-    # 段落や改行ベースで大まかに分けつつ、指定サイズに収める
-    paragraphs = text.split("\n\n")
+
+    # 行単位に分解し、長すぎる行は chunk_size ごとに切る
+    units = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        while len(line) > chunk_size:
+            units.append(line[:chunk_size])
+            line = line[chunk_size:]
+        units.append(line)
+
     chunks = []
-    current_chunk = ""
-
-    for para in paragraphs:
-        if len(current_chunk) + len(para) <= chunk_size:
-            current_chunk += para + "\n\n"
+    current = ""
+    for unit in units:
+        if current and len(current) + len(unit) + 1 > chunk_size:
+            chunks.append(current)
+            # 重なり部分を引き継いで次のチャンクを開始
+            current = current[-overlap:] + "\n" + unit if overlap > 0 else unit
         else:
-            if current_chunk.strip():
-                chunks.append(current_chunk.strip())
-            # オーバラップを持たせて次のチャンクを開始
-            current_chunk = para + "\n\n"
+            current = current + "\n" + unit if current else unit
 
-    if current_chunk.strip():
-        chunks.append(current_chunk.strip())
+    if current.strip():
+        chunks.append(current)
 
     return chunks
 
@@ -71,13 +83,14 @@ def sync_drive_to_chromadb(folder_id: str = None) -> int:
                 print(f"  -> スキップ: {file_name} からテキストを抽出できませんでした。")
             else:
                 # テキストを小分け（チャンク分割）する
-                chunks = split_text_into_chunks(text, chunk_size=300)
-                
+                chunks = split_text_into_chunks(text, chunk_size=400, overlap=80)
+
                 for idx, chunk in enumerate(chunks):
-                    # 各チャンクに固有の ID を割り当てる (例: file_id_0, file_id_1)
+                    # 各チャンクに固有の ID を割り当てる (例: file_id_chunk_0)
                     chunk_id = f"{file_id}_chunk_{idx}"
                     ids.append(chunk_id)
-                    documents.append(chunk)
+                    # どの文書の一部かが検索でもわかるよう、先頭にファイル名を付ける
+                    documents.append(f"【{file_name}】\n{chunk}")
                     metadatas.append(
                         {
                             "filename": file_name,
