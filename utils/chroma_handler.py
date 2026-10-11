@@ -91,7 +91,11 @@ def sync_dummy_data_to_chroma(folder_path: str = "dummy_data") -> int:
 
 
 def search_similar_documents(query: str, top_k: int = 5) -> list[dict]:
-    """検索クエリに対して類似度の高い文書（チャンク）を上位 top_k 件返す"""
+    """検索クエリに対して類似度の高い文書（チャンク）を上位 top_k 件返す
+
+    Returns:
+        list[dict]: filename / content / score / url（Drive の URL。なければ None）
+    """
     if not query.strip():
         return []
 
@@ -115,6 +119,8 @@ def search_similar_documents(query: str, top_k: int = 5) -> list[dict]:
                     "filename": metas[i]["filename"],
                     "content": docs[i],
                     "score": distances[i] if i < len(distances) else None,
+                    # Drive から同期した文書だけが持つ。dummy_data 由来の文書は None
+                    "url": metas[i].get("url"),
                 }
             )
 

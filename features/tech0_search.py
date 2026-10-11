@@ -12,6 +12,51 @@ from utils.sync_pipeline import sync_drive_to_chromadb
 FEATURE_KEY = "search"
 
 
+def _escape_markdown(text: str) -> str:
+    """ファイル名に含まれる記号が、Markdown の装飾やリンクとして解釈されないようにする"""
+    for ch in "\\`*_[]<>":
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
+def _strip_file_header(content: str) -> str:
+    """チャンク先頭の【ファイル名】行を取り除く（画面ではファイル名を別に表示するため）"""
+    if content.startswith("【"):
+        first_line, _, rest = content.partition("\n")
+        if first_line.endswith("】"):
+            return rest
+    return content
+
+
+def _render_sources(sources: list[dict]) -> None:
+    """回答の根拠にしたドキュメントを、ファイル単位にまとめて表示する。
+
+    - 同じファイルから複数のチャンクがヒットしても、ファイル名は1回だけ表示する
+    - Drive の URL があれば、ファイル名を新しいタブで開くリンクにする
+    """
+    if not sources:
+        return
+
+    # ファイル名ごとにまとめる（dict は追加した順番を保つので、検索順位の順に並ぶ）
+    grouped: dict[str, dict] = {}
+    for doc in sources:
+        entry = grouped.setdefault(doc["filename"], {"url": None, "excerpts": []})
+        if not entry["url"] and doc.get("url"):
+            entry["url"] = doc["url"]
+        entry["excerpts"].append(_strip_file_header(doc["content"]))
+
+    with st.expander("📚 参照したドキュメント"):
+        for idx, (filename, entry) in enumerate(grouped.items(), 1):
+            name = _escape_markdown(filename)
+            if entry["url"]:
+                st.markdown(f"**{idx}. [{name}]({entry['url']})** ↗")
+            else:
+                st.markdown(f"**{idx}. {name}**")
+            for excerpt in entry["excerpts"]:
+                suffix = "..." if len(excerpt) > 200 else ""
+                st.caption(excerpt[:200] + suffix)
+
+
 def render() -> None:
     """左レールでこの機能が選ばれているときに呼ばれる。"""
 
@@ -68,10 +113,7 @@ def render() -> None:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("sources"):
-                with st.expander("📚 参照したドキュメント"):
-                    for idx, doc in enumerate(msg["sources"], 1):
-                        st.markdown(f"**{idx}. {doc['filename']}**")
-                        st.caption(doc["content"][:200] + "...")
+                _render_sources(msg["sources"])
 
     # --- 5. チャット入力・AI処理 ---
     if prompt := st.chat_input("質問を入力してください（例: テレワークの手当はいくら？ / 対象外になる人は？）"):
@@ -146,10 +188,7 @@ def render() -> None:
 
                     # 参照ドキュメントの表示
                     if docs:
-                        with st.expander("📚 参照したドキュメント"):
-                            for idx, doc in enumerate(docs, 1):
-                                st.markdown(f"**{idx}. {doc['filename']}**")
-                                st.caption(doc["content"][:200] + "...")
+                        _render_sources(docs)
 
                     # 履歴に保存
                     st.session_state.messages.append(
