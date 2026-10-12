@@ -46,6 +46,15 @@ def split_text_into_chunks(text: str, chunk_size: int = 400, overlap: int = 80) 
     return chunks
 
 
+def build_drive_file_url(file_id: str) -> str:
+    """Google Drive のファイルIDから、ブラウザで開くための URL を組み立てる。
+
+    Google ドキュメント形式のファイルも、この URL から開くことができる。
+    開けるのは、そのファイルの閲覧権限を持つ人だけ。
+    """
+    return f"https://drive.google.com/file/d/{file_id}/view"
+
+
 def sync_drive_to_chromadb(folder_id: str = None) -> int:
     """指定した Google Drive フォルダの全ファイルを ChromaDB に同期する関数"""
     print("=== Google Drive データの同期を開始します ===")
@@ -98,6 +107,8 @@ def sync_drive_to_chromadb(folder_id: str = None) -> int:
                             "mime_type": mime_type,
                             "chunk_index": idx,
                             "path": f"Google Drive / {file_name}",
+                            # 検索結果からワンクリックで元のファイルを開くための URL
+                            "url": build_drive_file_url(file_id),
                         }
                     )
                 print(f"  -> 成功: {len(chunks)} チャンクに分割して登録")
